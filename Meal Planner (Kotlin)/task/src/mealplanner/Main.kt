@@ -7,7 +7,6 @@ import java.sql.Statement
 data class Meal(val category: String, val name: String, val ingredients: Set<String>) {
     override fun toString(): String {
         return buildString {
-            appendLine("Category: $category")
             appendLine("Name: $name")
             appendLine("Ingredients:")
             ingredients.forEach(::appendLine)
@@ -20,8 +19,6 @@ enum class MealCategory(val value: String) {
     LUNCH("lunch"),
     DINNER("dinner")
 }
-
-private val dailyMeals = mutableListOf<Meal>()
 
 // Validation Regex
 val lettersOnlyRegex = "^[A-Za-z ]+$".toRegex()
@@ -47,11 +44,22 @@ fun main() {
 }
 
 private fun showMeal() {
-    databaseUtil.getAllMealInfo()
-    println()
+    println("Which category do you want to print (breakfast, lunch, dinner)?")
+
+    // Read meal category
+    val mealCategory = readMealCategory()
+
+    // Fetch meals for category
+    val dailyMeals = databaseUtil.getMealInfoForCategory(mealCategory)
+    //databaseUtil.getAllMealInfo()
+
     with(dailyMeals) {
+        if (isNotEmpty()) {
+            println("Category: $mealCategory")
+            println()
+        }
         forEach(::println)
-        ifEmpty { println("No meals saved. Add a meal first.") }
+        ifEmpty { println("No meals found.") }
     }
 }
 
@@ -178,7 +186,8 @@ enum class DatabaseUtil {
         }
     }
 
-    fun getAllMealInfo() {
+    fun getAllMealInfo(): MutableList<Meal> {
+        val dailyMeals = mutableListOf<Meal>()
         try {
             val query = """ 
             SELECT meals.category, meals.meal, GROUP_CONCAT(ingredients.ingredient, ', ') AS ingredient_list 
@@ -198,6 +207,33 @@ enum class DatabaseUtil {
         } catch (ex: Exception) {
             println("Error getting meal info from db: ${ex.message}")
         }
+
+        return dailyMeals
+    }
+
+    fun getMealInfoForCategory(mealCategory: String): MutableList<Meal> {
+        val dailyMeals = mutableListOf<Meal>()
+        try {
+            val query = """ 
+            SELECT meals.category, meals.meal, GROUP_CONCAT(ingredients.ingredient, ', ') AS ingredient_list 
+            FROM meals, ingredients
+            WHERE meals.category = '$mealCategory' AND meals.meal_id = ingredients.meal_id 
+            GROUP BY meals.meal_id
+        """.trimIndent()
+
+            val rs = statement.executeQuery(query)
+            while (rs.next()) {
+                val category = rs.getString("category")
+                val mealName = rs.getString("meal")
+                val ingredientsList = rs.getString("ingredient_list").split(",").map { it.trim() }.toMutableSet()
+                val meal = Meal(category, mealName, ingredientsList)
+                dailyMeals.add(meal)
+            }
+        } catch (ex: Exception) {
+            println("Error getting meal info from db: ${ex.message}")
+        }
+
+        return dailyMeals
     }
 
     fun close() {
