@@ -1,5 +1,9 @@
 package mealplanner
 
+import java.sql.Connection
+import java.sql.DriverManager
+import java.sql.Statement
+
 data class Meal(val category: String, val name: String, val ingredients: Set<String>) {
     override fun toString(): String {
         return buildString {
@@ -22,6 +26,9 @@ private val dailyMeals = mutableListOf<Meal>()
 // Validation Regex
 val lettersOnlyRegex = "^[A-Za-z ]+$".toRegex()
 
+//DB connection helper
+val databaseUtil = DatabaseUtil.INSTANCE
+
 fun main() {
     while (true) {
         println("What would you like to do (add, show, exit)?")
@@ -30,6 +37,7 @@ fun main() {
             "show" -> showMeal()
             "exit" -> {
                 println("Bye!")
+                databaseUtil.close()
                 break
             }
 
@@ -39,6 +47,7 @@ fun main() {
 }
 
 private fun showMeal() {
+    databaseUtil.getAllMealInfo()
     println()
     with(dailyMeals) {
         forEach(::println)
@@ -64,10 +73,12 @@ private fun addMeal() {
     // Create the meal with input info
     val meal = Meal(mealCategory, mealName, ingredientsList)
 
-    //Add meal to Meal-list
-    dailyMeals.add(meal)
-
-    println("The meal has been added!")
+    //Add meal to Meals db
+    val mealId = databaseUtil.insertMeal(meal)
+    if (mealId != null) {
+        databaseUtil.insertIngredient(ingredientsList, mealId)
+        println("The meal has been added!")
+    }
 }
 
 private fun readMealCategory(): String {
@@ -96,4 +107,101 @@ private fun readIngredientList(): MutableSet<String> {
         return readIngredientList()
     }
     return ingredientsList
+}
+
+enum class DatabaseUtil {
+    INSTANCE;
+
+    private var connection: Connection = DriverManager.getConnection("jdbc:sqlite:meals.db")
+    private val statement: Statement = connection.createStatement()
+
+    init {
+        crateTables()
+    }
+
+    private fun crateTables() {
+        val createMealQuery = """
+            CREATE TABLE IF NOT EXISTS meals (
+            meal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meal TEXT NOT NULL, 
+            category TEXT NOT NULL
+            )
+        """.trimIndent()
+
+        val createIngredientQuery = """
+            CREATE TABLE IF NOT EXISTS ingredients (
+            ingredient_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ingredient TEXT NOT NULL,
+            meal_id  INTEGER,
+            FOREIGN KEY(meal_id) REFERENCES meals(meal_id) 
+            )
+        """.trimIndent()
+
+        try {
+            statement.executeUpdate(createMealQuery)
+            statement.executeUpdate(createIngredientQuery)
+        } catch (ex: Exception) {
+            println("Error creating tables: ${ex.message}")
+        }
+    }
+
+    fun insertMeal(meal: Meal): Int? {
+        return try {
+            val query = """
+            INSERT INTO meals (meal, category)
+            VALUES('${meal.name}','${meal.category}')
+        """.trimIndent()
+            statement.executeUpdate(query)
+
+            //val insertedMealIdQuery = "SELECT last_insert_rowid()"
+            val insertedMealIdQuery = "SELECT meal_id FROM meals ORDER BY meal_id DESC limit 1"
+            val rs = statement.executeQuery(insertedMealIdQuery)
+            rs.getInt("meal_id")
+        } catch (ex: Exception) {
+            println("Error inserting meal: ${ex.message}")
+            null
+        }
+    }
+
+    fun insertIngredient(ingredientList: Set<String>, mealId: Int) {
+        try {
+            ingredientList.forEach { ingredient ->
+                val query = """
+            INSERT INTO ingredients (ingredient, meal_id)
+            VALUES('$ingredient', $mealId)
+        """.trimIndent()
+
+                statement.executeUpdate(query)
+            }
+        } catch (ex: Exception) {
+            println("Error inserting meal: ${ex.message}")
+        }
+    }
+
+    fun getAllMealInfo() {
+        try {
+            val query = """ 
+            SELECT meals.category, meals.meal, GROUP_CONCAT(ingredients.ingredient, ', ') AS ingredient_list 
+            FROM meals, ingredients
+            WHERE meals.meal_id = ingredients.meal_id
+            GROUP BY meals.meal_id
+        """.trimIndent()
+
+            val rs = statement.executeQuery(query)
+            while (rs.next()) {
+                val mealCategory = rs.getString("category")
+                val mealName = rs.getString("meal")
+                val ingredientsList = rs.getString("ingredient_list").split(",").map { it.trim() }.toMutableSet()
+                val meal = Meal(mealCategory, mealName, ingredientsList)
+                dailyMeals.add(meal)
+            }
+        } catch (ex: Exception) {
+            println("Error getting meal info from db: ${ex.message}")
+        }
+    }
+
+    fun close() {
+        statement.close()
+        connection.close()
+    }
 }
