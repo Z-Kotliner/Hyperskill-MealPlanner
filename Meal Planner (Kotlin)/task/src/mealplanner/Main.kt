@@ -3,8 +3,9 @@ package mealplanner
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.Statement
+import java.time.DayOfWeek
 
-data class Meal(val category: String, val name: String, val ingredients: Set<String>) {
+data class Meal(val id: Int? = null, val category: String, val name: String, val ingredients: Set<String>) {
     override fun toString(): String {
         return buildString {
             appendLine("Name: $name")
@@ -28,10 +29,11 @@ val databaseUtil = DatabaseUtil.INSTANCE
 
 fun main() {
     while (true) {
-        println("What would you like to do (add, show, exit)?")
+        println("What would you like to do (add, show, plan, save, exit)?")
         when (readln()) {
             "add" -> addMeal()
             "show" -> showMeal()
+            "plan" -> planMeal()
             "exit" -> {
                 println("Bye!")
                 databaseUtil.close()
@@ -40,6 +42,58 @@ fun main() {
 
             else -> continue
         }
+    }
+}
+
+fun planMeal() {
+    // Init weekly plan holder
+    val weeklyMealPlan = mutableMapOf<String, Map<String, Meal>>()
+
+    DayOfWeek.values().forEach { dayOfWeek ->
+        // Print Day of week
+        println(dayOfWeek)
+
+        // Init daily plan holder
+        val dailyMealPlan = mutableMapOf<String, Meal>()
+
+        MealCategory.values().forEach { mealCategory ->
+            // Show list of stored meals for each category
+            val storedMeals = databaseUtil.getMealInfoForCategory(mealCategory.value)
+            storedMeals.sortedBy { it.name.lowercase() }.forEach { meal -> println(meal.name) }
+
+            // Ask user to choose meal
+            println("Choose the ${mealCategory.value} for $dayOfWeek from the list above:")
+
+            // Accept user input for meal and verify it is stored in the database or not
+            var mealName = readln()
+            while (storedMeals.count { it.name.equals(mealName, ignoreCase = true) } == 0) {
+                println("This meal doesn’t exist. Choose a meal from the list above.")
+                mealName = readln()
+            }
+
+            // Temporarily hold the selected meals for each category
+            val meal: Meal = storedMeals.find { it.name.equals(mealName, ignoreCase = true) }!!
+            dailyMealPlan[mealCategory.value] = meal
+        }
+
+        weeklyMealPlan[dayOfWeek.name] = dailyMealPlan
+        println("Yeah! We planned the meals for $dayOfWeek.")
+        println()
+    }
+
+    // Print weekly meal plan
+    printWeeklyPlan(weeklyMealPlan)
+
+    // Save plan data
+    databaseUtil.createPlanTable()
+    databaseUtil.insertPlan(weeklyMealPlan)
+}
+
+fun printWeeklyPlan(weeklyMealPlan: MutableMap<String, Map<String, Meal>>) {
+    weeklyMealPlan.forEach { (day, category) ->
+        println(day)
+        category.map { "${it.key.replaceFirstChar(Char::titlecase)}: ${it.value.name}" }.forEach(::println)
+        println()
     }
 }
 
@@ -79,7 +133,7 @@ private fun addMeal() {
     val ingredientsList: MutableSet<String> = readIngredientList()
 
     // Create the meal with input info
-    val meal = Meal(mealCategory, mealName, ingredientsList)
+    val meal = Meal(category = mealCategory, name = mealName, ingredients = ingredientsList)
 
     //Add meal to Meals db
     val mealId = databaseUtil.insertMeal(meal)
@@ -124,10 +178,11 @@ enum class DatabaseUtil {
     private val statement: Statement = connection.createStatement()
 
     init {
-        crateTables()
+        crateMealTables()
+        createPlanTable()
     }
 
-    private fun crateTables() {
+    private fun crateMealTables() {
         val createMealQuery = """
             CREATE TABLE IF NOT EXISTS meals (
             meal_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -201,7 +256,7 @@ enum class DatabaseUtil {
                 val mealCategory = rs.getString("category")
                 val mealName = rs.getString("meal")
                 val ingredientsList = rs.getString("ingredient_list").split(",").map { it.trim() }.toMutableSet()
-                val meal = Meal(mealCategory, mealName, ingredientsList)
+                val meal = Meal(category = mealCategory, name = mealName, ingredients = ingredientsList)
                 dailyMeals.add(meal)
             }
         } catch (ex: Exception) {
@@ -215,7 +270,7 @@ enum class DatabaseUtil {
         val dailyMeals = mutableListOf<Meal>()
         try {
             val query = """ 
-            SELECT meals.category, meals.meal, GROUP_CONCAT(ingredients.ingredient, ', ') AS ingredient_list 
+            SELECT meals.meal_id, meals.category, meals.meal, GROUP_CONCAT(ingredients.ingredient, ', ') AS ingredient_list 
             FROM meals, ingredients
             WHERE meals.category = '$mealCategory' AND meals.meal_id = ingredients.meal_id 
             GROUP BY meals.meal_id
@@ -223,10 +278,11 @@ enum class DatabaseUtil {
 
             val rs = statement.executeQuery(query)
             while (rs.next()) {
+                val mealId = rs.getInt("meal_id")
                 val category = rs.getString("category")
                 val mealName = rs.getString("meal")
                 val ingredientsList = rs.getString("ingredient_list").split(",").map { it.trim() }.toMutableSet()
-                val meal = Meal(category, mealName, ingredientsList)
+                val meal = Meal(id = mealId, category = category, name = mealName, ingredients = ingredientsList)
                 dailyMeals.add(meal)
             }
         } catch (ex: Exception) {
@@ -234,6 +290,47 @@ enum class DatabaseUtil {
         }
 
         return dailyMeals
+    }
+
+    fun createPlanTable() {
+        val dropTableQuery = """
+            DROP TABLE IF EXISTS plan;
+        """.trimIndent()
+
+        val createPlanQuery = """
+            CREATE TABLE plan (
+            day INT,
+            meal TEXT NOT NULL, 
+            category TEXT NOT NULL,
+            meal_id INT NOT NULL,
+            FOREIGN KEY(meal_id) REFERENCES meals(meal_id) 
+            )
+        """.trimIndent()
+
+        try {
+            statement.executeUpdate(dropTableQuery)
+            statement.executeUpdate(createPlanQuery)
+
+        } catch (ex: Exception) {
+            println("Error creating plan table: ${ex.message}")
+        }
+    }
+
+    fun insertPlan(plans: Map<String, Map<String, Meal>>) {
+        try {
+            plans.forEach { plan ->
+                plan.value.forEach { (category, meal) ->
+                    val query = """
+                    INSERT INTO plan (day, meal, category, meal_id)
+                    VALUES(${DayOfWeek.valueOf(plan.key).value},'${meal.name}', '$category', ${meal.id})
+                    """.trimIndent()
+
+                    statement.executeUpdate(query)
+                }
+            }
+        } catch (ex: Exception) {
+            println("Error inserting meal: ${ex.message}")
+        }
     }
 
     fun close() {
