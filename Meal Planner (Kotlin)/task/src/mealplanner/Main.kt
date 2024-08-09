@@ -1,5 +1,6 @@
 package mealplanner
 
+import java.io.File
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.Statement
@@ -34,6 +35,7 @@ fun main() {
             "add" -> addMeal()
             "show" -> showMeal()
             "plan" -> planMeal()
+            "save" -> saveShoppingList()
             "exit" -> {
                 println("Bye!")
                 databaseUtil.close()
@@ -43,6 +45,40 @@ fun main() {
             else -> continue
         }
     }
+}
+
+fun saveShoppingList() {
+    // Check for a stored plan in db
+    val ingredientList = databaseUtil.getIngredientListForPlan()
+    if (ingredientList.isEmpty()) {
+        println("Unable to save. Plan your meals first.")
+        return
+    }
+
+    // Ask user for file name
+    println("Input a filename:")
+    val fileName = readln()
+
+    // Process ingredient list to groups with count
+    val shoppingList = ingredientList.groupingBy { it }.eachCount()
+    //shoppingList.map { "${it.key}  ${it.value.takeIf { count -> count > 1 } ?: "" }" }.forEach(::println)
+    val orderedPlan = shoppingList.map { "${it.key} ${if (it.value > 1) "x${it.value}" else ""}" }
+
+    // Print to console
+    //orderedPlan.forEach(::println)
+
+    // Save shopping list
+    saveListToFile(orderedPlan, fileName)
+}
+
+fun saveListToFile(plan: List<String>, fileName: String) {
+    val file = File(fileName)
+    file.printWriter().use { out ->
+        plan.forEach { grocery ->
+            out.println(grocery)
+        }
+    }
+    println("Saved!")
 }
 
 fun planMeal() {
@@ -85,6 +121,7 @@ fun planMeal() {
     printWeeklyPlan(weeklyMealPlan)
 
     // Save plan data
+    databaseUtil.dropPlanTable()
     databaseUtil.createPlanTable()
     databaseUtil.insertPlan(weeklyMealPlan)
 }
@@ -293,12 +330,8 @@ enum class DatabaseUtil {
     }
 
     fun createPlanTable() {
-        val dropTableQuery = """
-            DROP TABLE IF EXISTS plan;
-        """.trimIndent()
-
         val createPlanQuery = """
-            CREATE TABLE plan (
+            CREATE TABLE IF NOT EXISTS plan (
             day INT,
             meal TEXT NOT NULL, 
             category TEXT NOT NULL,
@@ -308,7 +341,6 @@ enum class DatabaseUtil {
         """.trimIndent()
 
         try {
-            statement.executeUpdate(dropTableQuery)
             statement.executeUpdate(createPlanQuery)
 
         } catch (ex: Exception) {
@@ -331,6 +363,40 @@ enum class DatabaseUtil {
         } catch (ex: Exception) {
             println("Error inserting meal: ${ex.message}")
         }
+    }
+
+    fun dropPlanTable() {
+        val dropTableQuery = """
+            DROP TABLE IF EXISTS plan;
+        """.trimIndent()
+
+        try {
+            statement.executeUpdate(dropTableQuery)
+        } catch (ex: Exception) {
+            println("Error deleting plan table: ${ex.message}")
+        }
+    }
+
+    fun getIngredientListForPlan(): MutableList<String> {
+        val ingredientList = mutableListOf<String>()
+
+        try {
+            val query = """ 
+            SELECT plan.meal_id, GROUP_CONCAT(ingredients.ingredient, ', ') AS ingredient_list 
+            FROM plan, ingredients
+            WHERE plan.meal_id = ingredients.meal_id 
+            GROUP BY plan.meal_id
+        """.trimIndent()
+
+            val rs = statement.executeQuery(query)
+            while (rs.next()) {
+                val ingList = rs.getString("ingredient_list").split(",").map { it.trim() }
+                ingredientList.addAll(ingList)
+            }
+        } catch (ex: Exception) {
+            println("Error getting meal info from db: ${ex.message}")
+        }
+        return ingredientList
     }
 
     fun close() {
